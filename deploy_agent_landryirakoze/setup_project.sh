@@ -1,7 +1,8 @@
 
+
 set -euo pipefail
 
-
+# ── Color helpers ────────────────────────────────────────────
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 BLUE='\033[0;34m'; CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
 
@@ -20,7 +21,6 @@ fi
 
 INPUT="$1"
 
-# Reject names with spaces or special characters
 if [[ ! "$INPUT" =~ ^[a-zA-Z0-9_-]+$ ]]; then
     error "Project name may only contain letters, digits, underscores, and hyphens."
     exit 1
@@ -39,7 +39,7 @@ cleanup_on_interrupt() {
     if [[ -d "$PROJECT_DIR" ]]; then
         tar -czf "${ARCHIVE_NAME}.tar.gz" "$PROJECT_DIR" 2>/dev/null \
             && success "Archive created: ${ARCHIVE_NAME}.tar.gz" \
-            || warn "Archiving failed (partial directory may be missing files)."
+            || warn "Archiving failed."
 
         rm -rf "$PROJECT_DIR"
         success "Incomplete directory '${PROJECT_DIR}' removed."
@@ -73,117 +73,82 @@ header "Phase 2: Generating project files"
 
 # ── attendance_checker.py ────────────────────────────────────
 cat > "${PROJECT_DIR}/attendance_checker.py" << 'PYEOF'
-#!/usr/bin/env python3
-"""Student Attendance Tracker — main application logic."""
-
-import json
 import csv
+import json
 import os
 from datetime import datetime
 
-CONFIG_PATH  = os.path.join(os.path.dirname(__file__), "Helpers", "config.json")
-ASSETS_PATH  = os.path.join(os.path.dirname(__file__), "Helpers", "assets.csv")
-REPORTS_PATH = os.path.join(os.path.dirname(__file__), "reports", "reports.log")
+def run_attendance_check():
+    # 1. Load Config
+    with open('Helpers/config.json', 'r') as f:
+        config = json.load(f)
 
+    # 2. Archive old reports.log if it exists
+    if os.path.exists('reports/reports.log'):
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        os.rename('reports/reports.log', f'reports/reports_{timestamp}.log.archive')
 
-def load_config():
-    with open(CONFIG_PATH) as f:
-        return json.load(f)
-
-
-def load_students():
-    students = []
-    with open(ASSETS_PATH, newline="") as f:
+    # 3. Process Data
+    with open('Helpers/assets.csv', mode='r') as f, open('reports/reports.log', 'w') as log:
         reader = csv.DictReader(f)
+        total_sessions = config['total_sessions']
+
+        log.write(f"--- Attendance Report Run: {datetime.now()} ---\n")
+
         for row in reader:
-            students.append(row)
-    return students
+            name = row['Names']
+            email = row['Email']
+            attended = int(row['Attendance Count'])
 
+            # Simple Math: (Attended / Total) * 100
+            attendance_pct = (attended / total_sessions) * 100
 
-def evaluate_attendance(student, config):
-    attended  = int(student["classes_attended"])
-    total     = int(student["total_classes"])
-    pct       = (attended / total * 100) if total > 0 else 0
-    warning   = config["thresholds"]["warning_percentage"]
-    failure   = config["thresholds"]["failure_percentage"]
+            message = ""
+            if attendance_pct < config['thresholds']['failure']:
+                message = f"URGENT: {name}, your attendance is {attendance_pct:.1f}%. You will fail this class."
+            elif attendance_pct < config['thresholds']['warning']:
+                message = f"WARNING: {name}, your attendance is {attendance_pct:.1f}%. Please be careful."
 
-    if pct >= warning:
-        status = "PASS"
-    elif pct >= failure:
-        status = "WARNING"
-    else:
-        status = "FAIL"
-
-    return round(pct, 2), status
-
-
-def write_report(lines):
-    os.makedirs(os.path.dirname(REPORTS_PATH), exist_ok=True)
-    with open(REPORTS_PATH, "a") as f:
-        f.write(f"\n--- Report Generated: {datetime.now().isoformat()} ---\n")
-        for line in lines:
-            f.write(line + "\n")
-
-
-def main():
-    config   = load_config()
-    students = load_students()
-    report   = []
-
-    print(f"\n{'='*50}")
-    print(f"  Student Attendance Tracker")
-    print(f"  Warning threshold : {config['thresholds']['warning_percentage']}%")
-    print(f"  Failure threshold : {config['thresholds']['failure_percentage']}%")
-    print(f"{'='*50}\n")
-
-    for s in students:
-        pct, status = evaluate_attendance(s, config)
-        line = f"{s['student_name']:<20} | {pct:>6.2f}% | {status}"
-        print(line)
-        report.append(line)
-
-    write_report(report)
-    print(f"\nReport appended to: {REPORTS_PATH}")
-
+            if message:
+                if config['run_mode'] == "live":
+                    log.write(f"[{datetime.now()}] ALERT SENT TO {email}: {message}\n")
+                    print(f"Logged alert for {name}")
+                else:
+                    print(f"[DRY RUN] Email to {email}: {message}")
 
 if __name__ == "__main__":
-    main()
+    run_attendance_check()
 PYEOF
 success "Created attendance_checker.py"
 
 # ── assets.csv ───────────────────────────────────────────────
 cat > "${HELPERS_DIR}/assets.csv" << 'CSVEOF'
-student_name,classes_attended,total_classes
-Alice Johnson,38,40
-Bob Martinez,28,40
-Carol White,35,40
-David Lee,18,40
-Eva Chen,40,40
-Frank Brown,22,40
-Grace Kim,31,40
-Henry Davis,10,40
+Email,Names,Attendance Count,Absence Count
+alice@example.com,Alice Johnson,14,1
+bob@example.com,Bob Smith,7,8
+charlie@example.com,Charlie Davis,4,11
+diana@example.com,Diana Prince,15,0
 CSVEOF
 success "Created Helpers/assets.csv"
 
 # ── config.json ──────────────────────────────────────────────
 cat > "${HELPERS_DIR}/config.json" << 'JSONEOF'
 {
-  "thresholds": {
-    "warning_percentage": 75,
-    "failure_percentage": 50
-  },
-  "app": {
-    "name": "Student Attendance Tracker",
-    "version": "1.0.0"
-  }
+    "thresholds": {
+        "warning": 75,
+        "failure": 50
+    },
+    "run_mode": "live",
+    "total_sessions": 15
 }
 JSONEOF
 success "Created Helpers/config.json"
 
 # ── reports.log ──────────────────────────────────────────────
 cat > "${REPORTS_DIR}/reports.log" << 'LOGEOF'
-# Attendance Tracker — Log File
-# Created by setup_project.sh
+--- Attendance Report Run: 2026-02-06 18:10:01.468726 ---
+[2026-02-06 18:10:01.469363] ALERT SENT TO bob@example.com: URGENT: Bob Smith, your attendance is 46.7%. You will fail this class.
+[2026-02-06 18:10:01.469424] ALERT SENT TO charlie@example.com: URGENT: Charlie Davis, your attendance is 26.7%. You will fail this class.
 LOGEOF
 success "Created reports/reports.log"
 
@@ -192,7 +157,7 @@ success "Created reports/reports.log"
 # ════════════════════════════════════════════════════════════
 header "Phase 3: Dynamic Configuration"
 
-echo -e "Current defaults → Warning: ${YELLOW}75%${NC}  |  Failure: ${YELLOW}50%${NC}"
+echo -e "Current defaults → Warning: ${YELLOW}75%${NC}  |  Failure: ${YELLOW}50%${NC}  |  Total Sessions: ${YELLOW}15${NC}"
 echo ""
 read -rp "$(echo -e "${BOLD}Update attendance thresholds? [y/N]:${NC} ")" UPDATE_CHOICE
 
@@ -218,24 +183,42 @@ if [[ "$UPDATE_CHOICE" =~ ^[Yy]$ ]]; then
         error "Invalid input. Please enter a whole number between 1 and 100."
     done
 
-    # Validate logical ordering
+    # ── Total sessions ───────────────────────────────────────
+    while true; do
+        read -rp "  Enter total number of sessions (default 15): " SESSIONS_VAL
+        SESSIONS_VAL="${SESSIONS_VAL:-15}"
+        if [[ "$SESSIONS_VAL" =~ ^[0-9]+$ ]] && (( SESSIONS_VAL >= 1 )); then
+            break
+        fi
+        error "Invalid input. Please enter a positive whole number."
+    done
+
+    # ── Run mode ─────────────────────────────────────────────
+    while true; do
+        read -rp "  Enter run mode (live/dry, default live): " MODE_VAL
+        MODE_VAL="${MODE_VAL:-live}"
+        if [[ "$MODE_VAL" == "live" || "$MODE_VAL" == "dry" ]]; then
+            break
+        fi
+        error "Invalid input. Please enter 'live' or 'dry'."
+    done
+
+    # Validate logical ordering of thresholds
     if (( FAILURE_VAL >= WARNING_VAL )); then
         warn "Failure threshold (${FAILURE_VAL}%) must be less than Warning threshold (${WARNING_VAL}%)."
         warn "Keeping defaults (Warning=75, Failure=50)."
     else
-        # Perform in-place sed substitution (portable: works on Linux & macOS)
-        sed -i.bak \
-            "s/\"warning_percentage\": [0-9]*/\"warning_percentage\": ${WARNING_VAL}/" \
-            "${HELPERS_DIR}/config.json"
-        sed -i.bak \
-            "s/\"failure_percentage\": [0-9]*/\"failure_percentage\": ${FAILURE_VAL}/" \
-            "${HELPERS_DIR}/config.json"
+        sed -i.bak "s/\"warning\": [0-9]*/\"warning\": ${WARNING_VAL}/" "${HELPERS_DIR}/config.json"
+        sed -i.bak "s/\"failure\": [0-9]*/\"failure\": ${FAILURE_VAL}/" "${HELPERS_DIR}/config.json"
+        sed -i.bak "s/\"total_sessions\": [0-9]*/\"total_sessions\": ${SESSIONS_VAL}/" "${HELPERS_DIR}/config.json"
+        sed -i.bak "s/\"run_mode\": \"[a-z]*\"/\"run_mode\": \"${MODE_VAL}\"/" "${HELPERS_DIR}/config.json"
         rm -f "${HELPERS_DIR}/config.json.bak"
 
-        success "config.json updated → Warning: ${WARNING_VAL}%  |  Failure: ${FAILURE_VAL}%"
+        success "config.json updated:"
+        success "  Warning: ${WARNING_VAL}%  |  Failure: ${FAILURE_VAL}%  |  Sessions: ${SESSIONS_VAL}  |  Mode: ${MODE_VAL}"
     fi
 else
-    info "Keeping default thresholds (Warning=75%, Failure=50%)."
+    info "Keeping default configuration."
 fi
 
 # ════════════════════════════════════════════════════════════
